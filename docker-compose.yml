@@ -1,0 +1,338 @@
+# ──────────────────────────────────────────────────────────────────────
+# Local Docker Compose — Real Kafka + Real Spark
+#
+# Core (must-have):
+#   - kafka:      Apache Kafka (real, not emulated, KRaft mode)
+#   - spark:      Apache Spark master + worker (real PySpark)
+#
+# Local substitutes:
+#   - postgres:   BigQuery substitute (local SQL)
+#   - minio:      GCS substitute (S3-compatible)
+#
+# Usage:
+#   docker compose up -d                  # Start infrastructure
+#   docker compose run --rm init           # Seed DB + create topic + buckets
+#   docker compose up simulator            # Run simulator
+#   docker compose run --rm training       # One-shot training (via Spark)
+#   docker compose up streaming            # Streaming inference (via Spark)
+#   docker compose down -v                 # Tear down
+# ──────────────────────────────────────────────────────────────────────
+
+services:
+  # ════════════════════════════════════════════════════════════════════
+  # CORE: Kafka (real Apache Kafka)
+  # ════════════════════════════════════════════════════════════════════
+
+  kafka:
+    image: apache/kafka:3.7.1
+    container_name: fraud-kafka
+    restart: unless-stopped
+    mem_limit: 1g
+    mem_reservation: 512m
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_LISTENERS: 'CONTROLLER://0.0.0.0:29093,INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:9093'
+      KAFKA_ADVERTISED_LISTENERS: 'INTERNAL://kafka:9092,EXTERNAL://localhost:9093'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT'
+      KAFKA_INTER_BROKER_LISTENER_NAME: 'INTERNAL'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:29093'
+      CLUSTER_ID: '4L6g3nShT-eMCtK--X86sw'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_LOG_RETENTION_MS: 604800000
+      KAFKA_LOG_SEGMENT_BYTES: 104857600
+      KAFKA_NUM_PARTITIONS: 10
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_MIN_INSYNC_REPLICAS: 1
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+    networks:
+      - fraud-net
+
+  # ════════════════════════════════════════════════════════════════════
+  # CORE: Spark (real Apache Spark)
+  # ════════════════════════════════════════════════════════════════════
+
+  spark-master:
+    image: apache/spark:3.5.5
+    container_name: fraud-spark-master
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+    ports:
+      - "7077:7077"
+      - "8080:8080"
+    environment:
+      SPARK_MASTER_HOST: spark-master
+      SPARK_MASTER_PORT: "7077"
+      SPARK_MASTER_WEBUI_PORT: "8080"
+    volumes:
+      - spark-data:/opt/spark/work
+      - ./models:/models
+      - ./checkpoints:/checkpoints
+    networks:
+      - fraud-net
+
+  spark-worker:
+    image: apache/spark:3.5.5
+    container_name: fraud-spark-worker
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    depends_on:
+      - spark-master
+    ports:
+      - "8081:8081"
+    environment:
+      SPARK_WORKER_MEMORY: 4g
+      SPARK_WORKER_CORES: 2
+      SPARK_WORKER_WEBUI_PORT: "8081"
+    volumes:
+      - spark-data:/opt/spark/work
+      - ./models:/models
+      - ./checkpoints:/checkpoints
+    networks:
+      - fraud-net
+
+  # ════════════════════════════════════════════════════════════════════
+  # LOCAL: PostgreSQL + MinIO
+  # ════════════════════════════════════════════════════════════════════
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: fraud-postgres
+    environment:
+      POSTGRES_DB: fraud_detection
+      POSTGRES_USER: fraud
+      POSTGRES_PASSWORD: fraud_local_2024
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/db/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fraud -d fraud_detection"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - fraud-net
+
+  minio:
+    image: minio/minio:latest
+    container_name: fraud-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - fraud-net
+
+  # ════════════════════════════════════════════════════════════════════
+  # APPLICATION
+  # ════════════════════════════════════════════════════════════════════
+
+  init:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.init
+    container_name: fraud-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      KAFKA_RETENTION_MS: "${KAFKA_RETENTION_MS:-604800000}"
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: fraud_detection
+      POSTGRES_USER: fraud
+      POSTGRES_PASSWORD: fraud_local_2024
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    networks:
+      - fraud-net
+
+  simulator:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.app
+      target: simulator
+    container_name: fraud-simulator
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    environment:
+      PROJECT_ID: local
+      GCP_REGION: us-central1
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: transactions_topic
+      KAFKA_SA_EMAIL: local@local.iam
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: fraud_detection
+      POSTGRES_USER: fraud
+      POSTGRES_PASSWORD: fraud_local_2024
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      DATA_RATE: "${DATA_RATE:-normal}"  # light | normal | heavy
+      # Individual overrides (optional, override DATA_RATE profile):
+      # MIN_TPS: "10"
+      # MAX_TPS: "50"
+      # NUM_CUSTOMERS: "1000"
+      # NUM_TERMINALS: "10000"
+      # LABEL_DELAY_DAYS: "0"
+    networks:
+      - fraud-net
+
+  training:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.app
+      target: training
+    command: ["--project_id", "local", "--model_path", "/models/latest_rf_model"]
+    container_name: fraud-training
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      spark-master:
+        condition: service_started
+    environment:
+      PROJECT_ID: local
+      GCP_REGION: us-central1
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: fraud_detection
+      POSTGRES_USER: fraud
+      POSTGRES_PASSWORD: fraud_local_2024
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MODEL_BUCKET: fraud-models
+      SPARK_MASTER: spark://spark-master:7077
+      DATA_RATE: "${DATA_RATE:-normal}"
+    volumes:
+      - ./models:/models
+    networks:
+      - fraud-net
+
+  streaming:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.app
+      target: streaming
+    command: ["--project_id", "local", "--kafka_bootstrap_servers", "kafka:9092", "--model_bucket", "fraud-models", "--staging_bucket", "fraud-staging", "--checkpoint_bucket", "fraud-checkpoints"]
+    container_name: fraud-streaming
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      spark-master:
+        condition: service_started
+    environment:
+      PROJECT_ID: local
+      GCP_REGION: us-central1
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: transactions_topic
+      KAFKA_SA_EMAIL: local@local.iam
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: fraud_detection
+      POSTGRES_USER: fraud
+      POSTGRES_PASSWORD: fraud_local_2024
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MODEL_BUCKET: fraud-models
+      STAGING_BUCKET: fraud-staging
+      CHECKPOINT_BUCKET: fraud-checkpoints
+      SPARK_MASTER: spark://spark-master:7077
+      DATA_RATE: "${DATA_RATE:-normal}"
+    volumes:
+      - ./models:/models
+      - ./checkpoints:/checkpoints
+    networks:
+      - fraud-net
+
+  # ════════════════════════════════════════════════════════════════════
+  # DASHBOARD: Streamlit (PostgreSQL-backed)
+  # ════════════════════════════════════════════════════════════════════
+
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: fraud-dashboard
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8501:8501"
+    environment:
+      PROJECT_ID: local
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: fraud_detection
+      POSTGRES_USER: fraud
+      POSTGRES_PASSWORD: fraud_local_2024
+    networks:
+      - fraud-net
+
+  # ════════════════════════════════════════════════════════════════════
+  # DASHBOARD: Grafana (PostgreSQL-backed)
+  # ════════════════════════════════════════════════════════════════════
+
+  grafana:
+    image: grafana/grafana:11.6.0
+    container_name: fraud-grafana
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_INSTALL_PLUGINS: ""
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards
+    networks:
+      - fraud-net
+
+volumes:
+  kafka-data:
+  spark-data:
+  postgres-data:
+  minio-data:
+  grafana-data:
+
+networks:
+  fraud-net:
+    driver: bridge

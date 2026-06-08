@@ -1,0 +1,289 @@
+{
+  "title": "Fraud Detection — Real-Time Monitoring",
+  "tags": ["fraud", "mlops"],
+  "schemaVersion": 39,
+  "version": 2,
+  "timezone": "browser",
+  "refresh": "5s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Transactions Processed",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 3, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "datasource": { "type": "postgres" },
+          "rawSql": "SELECT COUNT(*) AS value FROM streaming_predictions",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "blue" },
+          "unit": "none"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Fraud Predicted",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 3, "x": 3, "y": 0 },
+      "targets": [
+        {
+          "datasource": { "type": "postgres" },
+          "rawSql": "SELECT COUNT(*) AS value FROM streaming_predictions WHERE is_fraud_predicted = 1",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "red" },
+          "unit": "none"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Fraud Rate",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 3, "x": 6, "y": 0 },
+      "targets": [
+        {
+          "datasource": { "type": "postgres" },
+          "rawSql": "SELECT ROUND(100.0 * SUM(is_fraud_predicted) / COUNT(*), 2) AS value FROM streaming_predictions",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 },
+              { "color": "red", "value": 3 }
+            ]
+          },
+          "unit": "percent"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Latest Prediction",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 3, "x": 9, "y": 0 },
+      "targets": [
+        {
+          "datasource": { "type": "postgres" },
+          "rawSql": "SELECT EXTRACT(EPOCH FROM COALESCE(MAX(predicted_at), NOW())) AS value FROM streaming_predictions",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "purple" },
+          "unit": "dateTimeFromNow"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Fraud Rate Over Time (24h)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [
+        {
+          "datasource": { "type": "postgres" },
+          "rawSql": "SELECT DATE_TRUNC('hour', predicted_at) AS time, ROUND(100.0 * SUM(is_fraud_predicted) / COUNT(*), 2) AS fraud_rate FROM streaming_predictions WHERE $__timeFilter(predicted_at) GROUP BY time ORDER BY time",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 },
+              { "color": "red", "value": 3 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Fraud Probability Distribution",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [
+        {
+          "datasource": { "type": "postgres" },
+          "rawSql": "SELECT (FLOOR(fraud_probability * 20) / 20)::TEXT AS bucket, COUNT(*) AS count FROM streaming_predictions WHERE $__timeFilter(predicted_at) GROUP BY bucket ORDER BY bucket",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Transaction Volume (Last Hour)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 12 },
+      "targets": [
+        {
+          "datasource": { "type": "postgres" },
+          "rawSql": "SELECT DATE_TRUNC('minute', predicted_at) AS time, COUNT(*) AS tx_count FROM streaming_predictions WHERE $__timeFilter(predicted_at) AND predicted_at >= NOW() - INTERVAL '1 hour' GROUP BY time ORDER BY time",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "title": "Fraud Count (Last Hour)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 12 },
+      "targets": [
+        {
+          "datasource": { "type": "postgres" },
+          "rawSql": "SELECT DATE_TRUNC('minute', predicted_at) AS time, COUNT(*) AS fraud_count FROM streaming_predictions WHERE $__timeFilter(predicted_at) AND predicted_at >= NOW() - INTERVAL '1 hour' AND is_fraud_predicted = 1 GROUP BY time ORDER BY time",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": { "mode": "fixed", "fixedColor": "red" }
+        }
+      }
+    },
+    {
+      "id": 9,
+      "title": "Transaction Volume (24h)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "targets": [
+        {
+          "datasource": { "type": "postgres" },
+          "rawSql": "SELECT DATE_TRUNC('hour', predicted_at) AS time, COUNT(*) AS tx_count FROM streaming_predictions WHERE $__timeFilter(predicted_at) GROUP BY time ORDER BY time",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "title": "Recent Fraud Predictions",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 20 },
+      "targets": [
+        {
+          "datasource": { "type": "postgres" },
+          "rawSql": "SELECT transaction_id, customer_id, terminal_id, ROUND(tx_amount::numeric, 2) AS tx_amount, ROUND(fraud_probability::numeric, 4) AS fraud_probability, is_fraud_predicted, predicted_at FROM streaming_predictions WHERE is_fraud_predicted = 1 ORDER BY predicted_at DESC LIMIT 50",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "value": "fraud_probability" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-text", "mode": "thresholds" } },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    { "color": "green", "value": null },
+                    { "color": "orange", "value": 0.5 },
+                    { "color": "red", "value": 0.85 }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "value": "is_fraud_predicted" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-background", "mode": "basic" } }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "title": "Top Fraudulent Terminals",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
+      "targets": [
+        {
+          "datasource": { "type": "postgres" },
+          "rawSql": "SELECT terminal_id::TEXT AS terminal_id, COUNT(*) AS fraud_count FROM streaming_predictions WHERE is_fraud_predicted = 1 AND $__timeFilter(predicted_at) GROUP BY terminal_id ORDER BY fraud_count DESC LIMIT 20",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        }
+      }
+    },
+    {
+      "id": 12,
+      "title": "Model Versions",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
+      "targets": [
+        {
+          "datasource": { "type": "postgres" },
+          "rawSql": "SELECT version, created_at, ROUND(roc_auc::numeric, 4) AS roc_auc, ROUND(pr_auc::numeric, 4) AS pr_auc, tp, fp, fn, tn FROM model_versions ORDER BY version DESC LIMIT 10",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        }
+      }
+    }
+  ],
+  "time": { "from": "now-24h", "to": "now" }
+}

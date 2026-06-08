@@ -1,0 +1,8 @@
+FROM python:3.11-slim
+
+RUN pip install --no-cache-dir kafka-python-ng psycopg2-binary minio requests
+
+COPY docker/init.py /app/init.py
+COPY docker/db/init/01_schema.sql /app/01_schema.sql
+
+ENTRYPOINT ["python", "/app/init.py"]

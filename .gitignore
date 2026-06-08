@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+
+# Terraform state (may contain secrets)
+infra/terraform.tfstate*
+infra/.terraform/
+
+# Logs
+deploy-logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+.docker/
+
+# Simulation state
+/tmp/
+simulator_state.json
+
+# Backup files
+*.bak
+
+# Node.js
+node_modules/
+
+# Docker runtime volumes
+checkpoints/
+models/
+
+# Agent instructions (keep local only)
+AGENTS.md
